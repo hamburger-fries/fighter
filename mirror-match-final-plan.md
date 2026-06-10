@@ -4,6 +4,11 @@
 > Specification) and is the authoritative sim contract for Phases 3–8 — there is no external
 > companion spec. Format: Gold Standard Template v4.0, Greenfield.
 > **Target runtime: desktop Google Chrome (stable).**
+>
+> **Concept:** a geometric, **Tekken-5-staged** single-player training fighter. Every character
+> shares **one 8-move kit** (the "mirror"); the full **Tekken 5 roster** are data-driven geometric
+> skins over that kit. Tekken 5 supplies the *staging* — camera, lighting, stage depth, weight, UI
+> — **not** models. **Private/educational build (Tekken © Bandai Namco; not for distribution).**
 
 ---
 
@@ -13,23 +18,34 @@
 |------|--------|-------------------------------|
 | Language / build | **TypeScript 5.x (strict)** + **Vite** | Fast HMR, first-class TS, trivial Chrome dev/build. |
 | Package mgr / scripts | **Bun** | Fast installs/scripts; Vite drives dev/build. (npm works identically if preferred — does not affect the shipped bundle.) |
-| Rendering | **Three.js `WebGPURenderer`** (single class, **automatic WebGL2 backend fallback**) | Desktop Chrome ships WebGPU stable since v113 → WebGPU is the **primary** backend; the WebGL2 backend is the same `WebGPURenderer` auto-selecting when no `GPUAdapter` is granted (and forced via `forceWebGL2` for the Android-Chrome coverage path). **One renderer, two backends — not two renderers.** TSL for the glow/zodiac shaders (TSL compiles to WGSL and GLSL, so one shader source feeds both backends). |
+| Rendering | **Three.js `WebGPURenderer`** (single class, **automatic WebGL2 backend fallback**) | Desktop Chrome ships WebGPU stable since v113 → WebGPU is the **primary** backend; the WebGL2 backend is the same `WebGPURenderer` auto-selecting when no `GPUAdapter` is granted (and forced via the `forceWebGL: true` constructor option for the Android-Chrome coverage path). **One renderer, two backends — not two renderers.** TSL for the glow/accent shaders (TSL compiles to WGSL and GLSL, so one shader source feeds both backends). |
 | 3D layer | **Bare Three.js — no React/R3F/Svelte** | A 60 Hz game loop wants direct object mutation, not a UI reconciler in the hot path. |
 | Game loop | **Hand-written fixed-timestep** (accumulator, dt-clamped) + render interpolation | Frame-rate-independent sim; smooth render. The spine. We do **not** use `setAnimationLoop()` — see the async-init note below. |
 | Simulation | **Pure TypeScript, deterministic, serializable** | Headless, unit-testable, rollback-ready. Spec = § Combat Specification. |
 | State machine | **Hand-rolled switch over an enum** (not XState) | Frame-perfect, trivially serializable, zero runtime overhead. |
 | UI store | **`zustand/vanilla`** | Tiny, framework-agnostic subscribe/select for **presentation state only**. |
 | HUD | **HTML/CSS overlay** on the canvas | Health bars, combo counter, debug — plain DOM beats a 3D HUD. |
+| Characters | **Data-driven `CharacterConfig`** over one shared rig | Full Tekken-5 roster as geometric skins; sim is character-agnostic. Tekken-5 = *staging* reference, not models. |
 | Audio | **Howler.js** | Wraps Web Audio; pooling + Chrome autoplay-unlock handled for you. |
-| Async boundaries | **Effect-TS v4 (beta — pinned)**, confined to `src/platform/**` | Typed, retryable asset load + persistence. Never in `sim/`, `loop/`, `render/`. **v4 is beta (4.0.0-beta.x); pin an exact version and treat breaking-change churn as a watched risk — see Assumptions #5 / Execution Notes.** |
+| Async boundaries | **Effect-TS v4 (beta — pinned)**, confined to `src/platform/**` | Typed, retryable asset load + persistence. Never in `sim/`, `loop/`, `render/`. **v4 is beta; pin the exact `4.0.0-beta.78` and treat breaking-change churn as a watched risk — see Assumptions #5 / Execution Notes.** |
 | Persistence | **`localStorage`** now; **`idb`** deferred | Settings/keybinds fit localStorage; IndexedDB waits for replays. |
 | Physics | **None** | Walls, gravity, juggles, bounces are deterministic sim math. |
 | Tests | **Vitest** (sim units + replay determinism) + **Playwright** (one Chrome smoke at Final Audit) | The decoupled sim is fully testable headlessly; Playwright drives real Chrome once — see the WebGPU-in-Playwright note at Phase 12. |
 
+**Considered & rejected — PixiJS v8:** evaluated as the renderer. Rejected: Pixi is **2D-only**
+(no 3D scene graph, no perspective camera, no native planar/mirror reflection), and its WebGPU
+backend is documented as experimental (it recommends WebGL for production). This game's look is
+**true 3D** — geometric `Object3D` rigs, a reflective floor, and perspective framing — and the
+plan commits to WebGPU-primary, both of which Three.js delivers natively. (The sim firewall keeps
+the renderer swappable if that ever changes; the swap touches only `render/`, `effects/`, and
+bootstrap.)
+
 **WebGPU async-init note (load-bearing for bootstrap):** `WebGPURenderer` initializes the GPU
 device **asynchronously**. Because we use a hand-written loop (not `setAnimationLoop()`),
-`main.ts` MUST `await renderer.init()` and confirm the active backend **before** the first
-tick/render. The loop never renders before init resolves. (Phase 0 wires this; Phase 1 depends
+`main.ts` MUST `await renderer.init()` and confirm the active backend — read `renderer.backend.isWebGPUBackend` (WebGPU) vs
+`renderer.backend.isWebGLBackend` (WebGL2 fallback) — **before** the first tick/render. WebGPU is
+the **default** backend (no constructor flag); pass `forceWebGL: true` only to exercise the WebGL2
+fallback. The loop never renders before init resolves. (Phase 0 wires this; Phase 1 depends
 on it.)
 
 **The load-bearing boundary:** `src/sim/**` is pure and headless (no `three`, DOM, audio,
@@ -55,7 +71,7 @@ Effect, timers, network). Everything else reads the sim; nothing writes back int
 > (impure). Other module names are expected starting seams, not contracts.
 
 **Locked identifiers (do not rename without a plan revision):**
-`src/sim/**` (pure firewall), `config/constants.ts`, `src/platform/**` (sole Effect home),
+`src/sim/**` (pure firewall), `config/constants.ts`, `config/characters.ts` (roster identity — render/UI only), `src/platform/**` (sole Effect home),
 `tests/sim/**`, `tests/replay/**`, `tests/e2e/**`.
 
 ```
@@ -70,6 +86,7 @@ mirror-match/
   src/
     main.ts                 # bootstrap: await renderer.init() → loop + HUD + stores
     config/constants.ts     # tick rate, gravity, speeds, arena bounds, move tables, tunables
+    config/characters.ts    # CharacterConfig roster (build/colors/accent per Tekken-5 char) — render/UI only, never sim
     sim/                    # PURE / HEADLESS — firewall applies. Spec: § Combat Specification.
       types.ts  step.ts  stateMachine.ts  fighterState.ts  serialize.ts
       input/{inputTypes,inputBuffer,commandParser}.ts
@@ -80,9 +97,9 @@ mirror-match/
     render/                 # reads sim, writes three — never the reverse
       renderer.ts           # WebGPURenderer (async init; auto WebGL2 backend), scene, lights
       camera.ts  rig.ts  fighterView.ts  arena.ts  interpolate.ts
-      effects/{hitSpark,zodiacParticles,jointFlash,cameraShake}.ts
+      effects/{hitSpark,energyParticles,jointFlash,cameraShake}.ts   # energyParticles tinted by CharacterConfig.accentColor
     audio/audioManager.ts   # Howler wrapper, sfx triggers, Chrome autoplay unlock
-    ui/{hud,healthBars,comboCounter,inputDisplay,debugPanel}.ts  ui/hud.css
+    ui/{hud,healthBars,comboCounter,inputDisplay,debugPanel,characterSelect}.ts  ui/{hud,characterSelect}.css
     state/uiStore.ts        # zustand/vanilla — presentation state only
     platform/{assets,persistence}.ts   # Effect-TS lives here ONLY
     training/dummy.ts       # scripted dummy controller (toggles → InputFrames)
@@ -96,13 +113,15 @@ mirror-match/
 
 ## Problem Statement
 
-There is no codebase. We need a playable single-player training mode for a 2.5D geometric
-zodiac fighter that runs at 60 FPS in desktop Chrome, built on a bare-Three.js
-`WebGPURenderer` over a deterministic, fixed-timestep, headless simulation. "Done" is: a
-human controls Leo, beats a configurable Aries dummy with all eight moves, every combat
-system (reactions, launchers, juggles, sweeps, knockdowns, wall bounce, combo scaling)
-behaves correctly and is unit-testable with no renderer attached, and the whole thing holds
-60 FPS in Chrome.
+There is no codebase. We need a playable single-player **training mode** for a 2.5D geometric
+fighter that runs at 60 FPS in desktop Chrome, built on a bare-Three.js `WebGPURenderer` over a
+deterministic, fixed-timestep, headless simulation. A human **picks any character from the full
+Tekken 5 roster**, fights a **configurable dummy** (also any roster character), using all eight
+moves of the **one shared kit**. "Done" is: every combat system (reactions, launchers, juggles,
+sweeps, knockdowns, wall bounce, combo scaling) behaves correctly and is unit-testable with no
+renderer attached; both selected characters render as **Tekken-5-staged geometric skins** over
+the shared rig; the **sim carries no character identity**; and the whole thing holds 60 FPS in
+Chrome.
 
 ---
 
@@ -115,10 +134,11 @@ behaves correctly and is unit-testable with no renderer attached, and the whole 
 2. **G2 — Determinism.** A recorded input log replayed twice on the same build yields an identical state hash.
 3. **G3 — Render-rate independence.** Sim ticks/wall-second are invariant under render throttling (±1 tick/s).
 4. **G4 — Combat correctness.** All eight moves, the connect table, the guard matrix, juggles, wall bounce, knockdowns, and combo scaling behave per § Combat Specification and are proven headlessly.
-5. **G5 — Observable play.** A human plays Leo vs the Aries dummy in Chrome; reactions render correctly.
-6. **G6 — Training surface.** HUD shows live state; dummy toggles work; settings/keybinds persist across reload.
+5. **G5 — Observable play.** A human plays any selected roster character vs a configurable dummy character in Chrome; reactions render correctly.
+6. **G6 — Training surface.** Character-select (player + dummy) works; HUD shows live state; dummy toggles work; settings/keybinds persist across reload.
 7. **G7 — Performance.** Desktop Chrome holds ≥ 60 FPS under a full-combat scene on the documented host; `step()` stays within the Phase 1 budget.
 8. **G8 — Baseline integrity.** No dead code, unused params/imports/exports; removed tests are replaced same-commit or justified.
+9. **G9 — Full roster, geometric.** Every Tekken-5 character is selectable for player and dummy and renders from a `CharacterConfig` over the one shared rig; the sim stays character-agnostic (identity is render/UI only).
 
 ---
 
@@ -127,9 +147,9 @@ behaves correctly and is unit-testable with no renderer attached, and the whole 
 - Online / netcode (sim is rollback-*ready*; no transport, prediction, or rollback ships here).
 - Cross-browser parity beyond Chrome. Firefox/Safari may work via the WebGL2 backend but are untested and out of scope.
 - Z-axis sidestep movement (lane locked for MVP).
-- Signs beyond Leo (player) and Aries (dummy) wired end-to-end; others are data-only stubs.
+- **Unique per-character movesets.** Every character shares the one 8-move kit (the *mirror*); identity is cosmetic (build/proportions, palette, name, accent shape) — not new moves or frame data.
 - Real CPU AI (the dummy is scripted toggles).
-- Postprocessing stacks, imported models, rigged/IK animation.
+- Postprocessing stacks, **imported character models, rigged/IK/skeletal animation** (decided: characters are procedural geometric primitives; Tekken-5 is a *staging* reference, not an asset source).
 - A physics engine.
 - Rounds/victory flow beyond a timer placeholder.
 - Cross-platform / cross-client determinism (floats are deterministic for **same-build replay** only; true rollback would need fixed-point — out of scope, see Assumptions #6).
@@ -182,7 +202,7 @@ behaves correctly and is unit-testable with no renderer attached, and the whole 
 - [ ] Baseline build: `vite build` — record success + bundle size.
 - [ ] Baseline static analysis: `tsc --noEmit` + `eslint .` — record `0 errors`.
 - [ ] Runtime: `bun --version` (and `node --version`) meet Vite's minimum.
-- [ ] **Chrome WebGPU probe:** target Chrome version `await renderer.init()` reports backend = WebGPU (a `GPUAdapter` was granted); record the Chrome version. Confirm the WebGL2 backend also initializes when WebGPU is forced off (`forceWebGL2`).
+- [ ] **Chrome WebGPU probe:** target Chrome version `await renderer.init()` reports backend = WebGPU (a `GPUAdapter` was granted); record the Chrome version. Confirm the WebGL2 backend also initializes when WebGPU is forced off (`forceWebGL: true`).
 - [ ] Pre-existing tree: `README.md` (stub) + `logs/` only; no source. No carried-forward cleanup (greenfield).
 
 ---
@@ -192,8 +212,9 @@ behaves correctly and is unit-testable with no renderer attached, and the whole 
 > **This section replaces the previously-referenced external `game-logic-prompt`.** All
 > numbers are **tunable defaults** at 60 Hz integer frames; they live in `config/constants.ts`
 > / the move tables and are tuned in code, not gated here. Internally consistent and chosen so
-> every correctness criterion is unit-testable. Leo and Aries share one kit (it is a *mirror*
-> match).
+> every correctness criterion is unit-testable. **Every character shares this one kit** — it is a
+> *mirror* match mechanically; the Tekken 5 roster are presentation skins over it (§ Character
+> Roster & Identity). The sim has **no character identity**.
 
 ### §1 Units & coordinates
 - Lane-locked 2.5D: fighters move on the X axis only; Y is height (jump/launch); Z fixed.
@@ -309,17 +330,96 @@ audio consume this list from their read of sim state; nothing in `src/sim` consu
 
 ---
 
+## Character Roster & Identity (presentation contract)
+
+> **Load-bearing firewall rule:** a character is a **presentation skin only**. The sim
+> (`src/sim/**`) has **no character identity** — it simulates two fighters over the one shared
+> kit (§ Combat Specification). Identity (name, proportions, colors, accent shape) lives in
+> `config/characters.ts`, read by `render/` + `ui/` **only**. Swapping characters never changes a
+> single sim output. This is what makes "all characters" cheap: **one kit, N skins.**
+>
+> **Scope (decided): the full Tekken 5 roster, geometric, all wired this build** as data-driven
+> configs over the shared procedural rig (Phase 2) + shared 8-move sim. Tekken 5 is the
+> **art-direction + staging** reference (camera, lighting, stage depth, weight, UI) — **not** an
+> asset source; no models are imported (Non-Goals). **Private/educational build; Tekken is Bandai
+> Namco IP — not for distribution.**
+
+### `CharacterConfig` schema (`config/characters.ts`)
+```
+CharacterConfig = {
+  id:           string   // 'jin', 'kazuya', ...
+  displayName:  string   // 'Jin Kazama'
+  build:        { height, mass, limbScale, torsoScale }   // scalars on the shared rig
+  primaryColor: hex      // body / outfit dominant
+  accentColor:  hex      // signature accent + joint-glow / energyParticle color
+  accent?:      AccentShape   // optional primitive add-on (hair spikes, mask, wings, ears, hat)
+  stance?:      PoseOffsets   // optional idle-stance signature
+}
+```
+`build` + colors drive `fighterView.ts`; `accentColor` feeds `jointFlash` + `energyParticles`
+(§11 render). **No field reaches the sim.**
+
+### Roster (≈32 base Tekken 5 + optional DR), authored from public reference art
+**Base Tekken 5:** Jin, Kazuya, Heihachi, Paul, Marshall Law, Nina, Anna, King, Marduk, Bryan,
+Bruce, Lei, Hwoarang, Baek, Xiaoyu, Asuka, Julia, Christie, Eddy, Steve, Lee, Feng, Raven,
+Yoshimitsu, Wang, Ganryu, Devil Jin, Jack-5, Kuma, Panda, Mokujin, Roger Jr.
+**Optional Dark Resurrection:** Lili, Dragunov, Armor King (+ Jinpachi as an unlock).
+Build archetypes for rig scalars: *lean-tall striker · tall-heavy bruiser · small-fast agile ·
+huge grappler · animal/non-human*. Per-character color/build/accent **seed values** are authored
+in `config/characters.ts` during execution (code, not gated here — same status as the combat
+tunables), referenced from the gallery: https://tekken.fandom.com/wiki/Tekken_5/Gallery .
+
+> Non-human entries (Kuma/Panda bear, Mokujin wood dummy, Roger Jr. kangaroo, Jack-5 robot) use
+> the **same rig** with build scalars + accent shapes — stylized geometric, not modeled.
+
+---
+
+## Platform Layer (Effect boundary contract)
+
+> Effect-TS lives **only** in `src/platform/**` (FR-01 boundary lint). Two files, both run at
+> startup/menu boundaries — never per tick. This contract makes the boundary concrete so an
+> executor does not leak `Effect<…>` into `loop/sim/render` or reach for the wrong API.
+
+- **Packages.** `effect@4.0.0-beta.78` (pinned, exact) + `@effect/platform-browser` on the **same**
+  beta for the localStorage layer. No other `@effect/*` runtime package is needed; add
+  `@effect/vitest` only if the platform tests adopt it. Keep every `@effect/*` version-aligned.
+- **Runtime boundary (load-bearing).** Build the runtime once at `main.ts` (a `ManagedRuntime`
+  from the platform layer, or a top-level `Effect.runPromise`). Platform Effects are *run there*,
+  at startup/menu only; `loop`/`sim`/`render`/`ui` receive **resolved plain values**, never an
+  `Effect`. This is what "Effect only at boundaries" means operationally — and why persistence
+  can never stall a frame (P10 failure protocol).
+- **`platform/persistence.ts` — settings + keybinds (FR-20).** Use `@effect/platform-browser`
+  `BrowserKeyValueStore.layerLocalStorage` as the live `KeyValueStore`; in tests provide the
+  in-memory layer (`KeyValueStore.layerMemory`, imported from `effect/unstable/persistence/KeyValueStore`
+  in the beta line) so the round-trip test (AT-22) is pure — no jsdom/localStorage shim. Model
+  `Settings`/`Keybinds` as a `Schema.Class`; **load** via `Schema.decodeUnknownEffect` (corrupt or
+  absent store → typed `SchemaError` → fall back to defaults, never throw); **save** via
+  `Schema.encode`.
+- **`platform/assets.ts` — audio preload (FR-20).** Howler load is event-based (`onload` /
+  `onloaderror`), so wrap each load in `Effect.async`, **not** `Effect.tryPromise`. A failure is a
+  typed `AssetLoadError` (`Data.TaggedError`); retry with
+  `Effect.retry(load, Schedule.exponential('100 millis').pipe(Schedule.intersect(Schedule.recurs(3))))`.
+  A missing asset surfaces the typed error after the retries — exercised by the P10 failure test.
+- **TS discipline (skill rule).** No `any`, no `as`; the localStorage boundary is *decoded* via
+  Schema, not asserted. Prefer `Effect.fn` for reusable platform business logic.
+
+> *Note: `KeyValueStore` import paths differ between the v4-beta line (`effect/unstable/...` +*
+> *`@effect/platform-browser`) and v3 (`@effect/platform`); the Assumption #5 escape hatch accounts*
+> *for that divergence.*
+
+---
+
 ## Functional Requirements
 
 > FR-XX numbered. Each cites the Combat Spec section and the phase that delivers it.
 
 - **FR-01** (G1, P0) Two ESLint `no-restricted-imports` rules: `src/sim` bans `three/howler/effect/DOM/timers`; `src/{sim,loop,render}` bans `effect`.
-- **FR-02** (G1/G7, P0) `renderer.ts` constructs `WebGPURenderer`; `main.ts` `await`s `renderer.init()`, logs the active backend, and only then starts the loop. WebGL2 backend reachable via `forceWebGL2`.
-- **FR-03** (G2, P1) `sim/serialize.ts` snapshots `GameState` and produces a **stable hash over the typed-array/byte buffer** (not a JSON string — avoids `-0`/`NaN`/float-format drift).
+- **FR-02** (G1/G7, P0) `renderer.ts` constructs `WebGPURenderer`; `main.ts` `await`s `renderer.init()`, logs the active backend (`renderer.backend.isWebGPUBackend` vs `renderer.backend.isWebGLBackend`), and only then starts the loop. WebGPU is the default backend; the WebGL2 fallback is reachable via the `forceWebGL: true` constructor option.
+- **FR-03** (G2, P1) `sim/serialize.ts` snapshots `GameState` and produces a **stable hash over the typed-array/byte buffer** (not a JSON string — avoids float→string format drift). **Canonicalize before hashing:** map `-0 → 0` and keep `NaN` out of serialized fields (or canonicalize it), because raw byte hashing *is* sensitive to `-0`/`NaN` bit patterns — otherwise two semantically-equal states can hash unequal (breaks AT-05). Same-build replay (AT-02/AT-04) stays bit-deterministic either way.
 - **FR-04** (G2, P1) Replay: a recorded `InputFrame` log replayed twice → identical hash.
 - **FR-05** (G3, P1) `loop/gameLoop.ts` fixed-timestep accumulator with **dt clamp ≤ 250 ms** and a **max-substeps cap**; render gets interpolation `alpha`. Sim ticks/wall-second invariant under render throttle (±1).
 - **FR-06** (G5, P2) `rig.ts` builds a shared-material `Object3D` humanoid (head/torso/pelvis/arms/forearms/hands/thighs/shins/feet + joint spheres). No per-limb material clones.
-- **FR-07** (G5, P2) `fighterView.ts` maps a `FighterState` pose to a rig; idle/neutral stance; player + dummy spawn at opposing X, both framed.
+- **FR-07** (G5, P2) `fighterView.ts` maps a `FighterState` pose to a rig **and applies a `CharacterConfig` (build scalars + colors) to the shared rig**; idle/neutral stance; the two selected characters spawn at opposing X, both framed.
 - **FR-08** (G4, P3) Input layer latches one `InputFrame`/fighter/tick; `inputBuffer.ts` ring buffer (`INPUT_BUFFER_LEN`).
 - **FR-09** (G4, P3) Movement FSM (§3): idle/walk/crouch/jump with sim gravity + ground clamp; legal transitions pass, illegal rejected.
 - **FR-10** (G4, P4) All eight moves load from `moveData.ts` with the §5 frame data; hitboxes live only on active frames; `hasHitThisMove` resets per move.
@@ -329,13 +429,17 @@ audio consume this list from their read of sim state; nothing in `src/sim` consu
 - **FR-14** (G4, P6) Launchers set `launched`; sim gravity; `juggle.ts` lift decay + `MAX_JUGGLES`; air hits continue the juggle; cap → knockdown.
 - **FR-15** (G4, P7) Sweep/Low trip → knockdown; `knockdown.ts` lifecycle + invulnerability; walls at `±ARENA_HALF_WIDTH`; `wallBounce.ts` once-per-combo `wallSplat` else knockdown; `groundBounceUsed` tracked; Wall Smash wired to the wall path.
 - **FR-16** (G4, P8) `comboManager.ts` + `damageScaling.ts` per §10 (pre-hit compute, then increment); reset on recover/ground; surface to `uiStore`.
-- **FR-17** (G5, P9) Render/audio feedback (jointFlash, **pooled** hitSpark/zodiacParticles, cameraShake, Howler impacts + autoplay unlock) consume `state.events` only; firewall `rg` clean.
+- **FR-17** (G5, P9) Render/audio feedback (jointFlash, **pooled** hitSpark/energyParticles, cameraShake, Howler impacts + autoplay unlock) consume `state.events` only; firewall `rg` clean.
 - **FR-18** (G6, P10) HTML/CSS HUD via `zustand/vanilla`: health bars, timer placeholder, combo counter, damage, state debug, input display, optional FPS.
 - **FR-19** (G6, P10) `training/dummy.ts` toggles (block / auto-recover / jump-state / reset) feed scripted `InputFrame`s into the sim.
-- **FR-20** (G6, P10) `platform/persistence.ts` (Effect) load/save settings + keybinds to `localStorage`; `platform/assets.ts` (Effect) preloads audio with typed failure/retry; Effect only under `src/platform`.
-- **FR-21** (G7, P11) `arena.ts` + `zodiacConfigs` theming (reflective floor, zodiac circle, mirror-wall visuals, constellation lines, neon symbols) at low asset weight; Leo/Aries energy colors map to flash + particles.
+- **FR-20** (G6, P10) `platform/persistence.ts` (Effect) load/save settings + keybinds to `localStorage`; `platform/assets.ts` (Effect) preloads audio with typed failure/retry; Effect only under `src/platform` (see § Platform Layer for the package, runtime-boundary, and Schema contract).
+- **FR-21** (G7, P11) `arena.ts` Tekken-5 staging (enclosed walled arena, reflective/graded floor, deep hazy layered background, per-stage key+rim lighting + color grade) at low asset weight; side-3/4 tracking camera (dolly in/out + lateral track).
 - **FR-22** (G7, P12) Desktop Chrome ≥ 60 FPS under full combat on the documented host; `step()` within the Phase 1 budget; Android-Chrome FPS via WebGL2 backend recorded (target 30–60).
 - **FR-23** (G2/G4/G7, P12) Final Audit: one repo-wide cold run (build/tsc/eslint/full Vitest/replay) + Playwright Chrome smoke (real Chrome + WebGPU flags — see Phase 12).
+- **FR-24** (G9, P2) `config/characters.ts` defines the `CharacterConfig` schema (§ Character Roster); `fighterView.ts` is config-driven — build scalars + colors applied to the shared rig. Identity never enters the sim (firewall).
+- **FR-25** (G9, P11) The full Tekken-5 roster is authored as `CharacterConfig`s; `accentColor` maps to `jointFlash` + `energyParticles`; **every** character renders from config (render-sweep verified).
+- **FR-26** (G6, P10) `ui/characterSelect.ts` portrait-grid select for **player + dummy** identity; confirm spawns the chosen pair; swap supported; selection carries no data into the sim.
+- **FR-27** (G7, P11) Tekken-5 staging: side-3/4 **tracking camera** (dolly in/out + lateral track), key+rim lighting + per-stage color grade, enclosed walled arena + hazy layered background, chrome lifebars + portrait-grid select UI.
 
 ---
 
@@ -345,7 +449,7 @@ audio consume this list from their read of sim state; nothing in `src/sim` consu
 > **Running total never decreases.** A refactor that invalidates a test replaces it same-commit.
 > Counts below are targets (`≈`), tuned during execution; the **monotonic floor** is the contract.
 
-| After phase | New sim/replay tests (≈) | Running total (floor) | Adds |
+| After phase | New unit tests — sim/replay/pure (≈) | Running total (floor) | Adds |
 |-------------|--------------------------|------------------------|------|
 | P0 | 1 | 1 | trivial smoke |
 | P1 | 3 | 4 | serialize+hash, replay determinism, tick-parity |
@@ -357,9 +461,9 @@ audio consume this list from their read of sim state; nothing in `src/sim` consu
 | P7 | 8 | 49 | sweep→knockdown, knockdown lifecycle, once-per-combo wall, 2nd-contact→knockdown |
 | P8 | 7 | 56 | scaling across long combo, pre-hit increment order, reset conditions |
 | P9 | 3 | 59 | sim `events[]` emission (sim-side only) |
-| P10 | 4 | 63 | persistence round-trip, dummy-toggle input path |
-| P11 | 1 | 64 | zodiac config mapping |
-| P12 | +1 e2e | 64 sim + 1 e2e | Playwright Chrome smoke |
+| P10 | 6 | 65 | persistence round-trip, dummy-toggle, asset preload typed-failure/retry, character-select logic |
+| P11 | 1 | 66 | character config: all roster entries load + valid |
+| P12 | +1 e2e | 66 sim + 1 e2e | Playwright Chrome smoke |
 
 **Coverage floor:** sim hot paths the perf/correctness criteria measure (frame data, hit
 detection, FSM, combo/juggle math) carry **100% branch coverage**. Render/UI/audio follow risk.
@@ -376,6 +480,9 @@ detection, FSM, combo/juggle math) carry **100% branch coverage**. Render/UI/aud
 - **EC-3 — WebGPU async-init race.** A hand-written loop can render before `WebGPURenderer` finishes async init. **Fix:** FR-02 / Hard Constraint — `await renderer.init()` before the loop. (Owner: P0/P1.)
 - **EC-4 — Accumulator spiral-of-death.** Fixed-timestep with no dt clamp death-spirals after a backgrounded tab. **Fix:** FR-05 dt clamp + substep cap. (Owner: P1.)
 - **EC-5 — Playwright can't reach WebGPU by default.** Headless bundled Chromium lacks WebGPU without flags. **Fix:** Phase 12 uses `channel: 'chrome'` + WebGPU launch flags and records the backend actually exercised. (Owner: P12.)
+- **EC-6 — `groundBounceUsed` has no MVP consumer.** No current move sets it (§9), which is in tension with EC-1 (defer the unused `rng.ts`) and the Simplicity gate. **Ruling: keep it.** Unlike `rng.ts` — a whole module/seam — this is a single bookkeeping boolean in combo state that mirrors `wallBounceUsed` and rides the *same* once-per-combo reset path (the wall path is the live consumer of that pattern). It is tracked-only, sets nothing, and is asserted by no MVP test; adding a move that sets it is a deliberate, justified step under the Simplicity gate. (Owner: P7/P8.)
+- **EC-7 — Wrong Three.js fallback option name.** The prior draft used `forceWebGL2`, which is not a `WebGPURenderer` option. **Fix:** the real constructor option is `forceWebGL: true` (forces the WebGL2-based `WebGLBackend`); WebGPU is the no-flag default; active backend is read via `renderer.backend.isWebGPUBackend` / `isWebGLBackend`. (Owner: P0 — Stack/FR-02/Audit Baseline updated.)
+- **EC-8 — Zodiac concept replaced by the Tekken-5 roster.** The prior draft themed fighters as zodiac signs (Leo/Aries + sign stubs, others data-only). **Fix (decided):** the full Tekken 5 roster — geometric skins over the one shared kit — replaces the zodiac theme; § Character Roster & Identity is the new identity contract; Phase 11 retargets to Tekken-5 staging; `zodiacParticles`→`energyParticles`, `zodiacConfigs`→`config/characters.ts`. Because the sim stays **character-agnostic**, the change touches `config/`, `render/`, `ui/` only — **no sim/combat change** (the sim/combat correctness tests are untouched; the two added tests are render/UI/platform-side). (Owner: P2/P10/P11.)
 
 ---
 
@@ -394,7 +501,7 @@ firewall lint rules pass on an empty `src`.
 **Work:**
 - [ ] Scaffold Vite + TypeScript (strict); `index.html` with a full-window canvas.
 - [ ] Add Three.js; `renderer.ts` constructs `WebGPURenderer`; `main.ts` `await renderer.init()`, logs the active backend, then clears to a flat color (FR-02, EC-3).
-- [ ] Confirm `forceWebGL2` reaches the WebGL2 backend (logged).
+- [ ] Confirm `forceWebGL: true` reaches the WebGL2 backend (logged).
 - [ ] Add Vitest; one trivial passing test (test floor: 1).
 - [ ] Add ESLint with the two `no-restricted-imports` rules (FR-01).
 - [ ] Create the directory skeleton (no logic; `rng.ts` intentionally absent — EC-1).
@@ -431,7 +538,9 @@ input log reproduces an identical state hash. The accumulator is dt-clamped.
 
 **Exit gates (overrides only):**
 - Tick-count parity across throttle within ±1 tick/sec (AT-04).
-- Replay hash equality (AT-02).
+- Replay hash equality (AT-02); byte-buffer hash equal for equal states, `-0`/`NaN` canonicalized (AT-05).
+- Accumulator dt-clamp + substep cap survive a simulated long stall — no death-spiral (AT-06).
+- Render interpolation `alpha` drives draw between prev/next snapshots; no sim mutation in render (AT-07).
 - Running test floor: **4**.
 
 **Evidence:** replay test output with both hashes; tick-count parity log; frame-time + `step()` baselines.
@@ -444,7 +553,7 @@ input log reproduces an identical state hash. The accumulator is dt-clamped.
 
 **Checklist rule: mark `[x]` only when implementation is complete and validated with tests/evidence.**
 
-**Objective:** Two geometric humanoid rigs (Leo, Aries) stand in the arena, framed by the
+**Objective:** Two geometric humanoid rigs (two selected roster characters) stand in the arena, framed by the
 camera, glowing joints, posable from a `FighterState`.
 
 **Entry criteria:** Phase 1 gates green.
@@ -452,8 +561,9 @@ camera, glowing joints, posable from a `FighterState`.
 **Work:**
 - [ ] `rig.ts`: `Object3D` graph for head/torso/pelvis/arms/forearms/hands/thighs/shins/feet + joint spheres, named refs (FR-06).
 - [ ] Shared materials (one body, one joint/glow) — no per-limb material clones.
-- [ ] `fighterView.ts`: apply a `FighterState` pose to a rig; idle/neutral stance (FR-07).
-- [ ] Spawn player + dummy at opposing X; camera frames both (note dynamic framing as they approach the walls).
+- [ ] `config/characters.ts`: `CharacterConfig` schema + ≥2 seed configs (full roster authored in Phase 11) (FR-24).
+- [ ] `fighterView.ts`: apply a `FighterState` pose to a rig **and a `CharacterConfig` (build scalars + colors) to the shared rig**; idle/neutral stance (FR-07, FR-24).
+- [ ] Spawn two characters (config-driven) at opposing X; camera frames both (note dynamic framing as they approach the walls).
 - [ ] Confirm joint glow renders under the WebGPU backend (and the WebGL2 backend initializes).
 - [ ] Test: pure pose-mapping helper (FighterState → joint transforms) (1).
 
@@ -512,11 +622,11 @@ hitstun (no knockback/launch yet). *(Sim spec: §5, §6, §7.)*
 - [ ] Apply damage + `hitstun` on connect; drop dummy health.
 - [ ] Debug hitbox/hurtbox overlay (toggle) in render.
 - [ ] Test: active-frame gating inclusive/exclusive bounds (≈3).
-- [ ] Test: each move's frame data loads (≈2).
-- [ ] Test: §7 level-vs-stance connect/whiff (≈3).
+- [ ] Test: each move's frame data loads (≈2) (AT-08).
+- [ ] Test: §7 level-vs-stance connect/whiff (≈3) (AT-09).
 - [ ] Test: §6 command disambiguation incl. `J,J,K` chain (≈4) (AT-10).
 
-**Exit gates (overrides only):** Move + command tests green (AT-05, AT-10). Running test floor: **23**.
+**Exit gates (overrides only):** Move + command tests green (AT-08, AT-09, AT-10). Running test floor: **23**.
 
 **Evidence:** `vitest run tests/sim/moves tests/sim/commands`; recording of each move connecting; overlay screenshot.
 
@@ -538,11 +648,11 @@ hitstun (no knockback/launch yet). *(Sim spec: §5, §6, §7.)*
 - [ ] §8 guard resolution table; `blockstun` on block, `hitstun` + `knockback` on hit (FR-13).
 - [ ] Drive hitstun/blockstun/knockback poses + displacement in render.
 - [ ] Dummy "block on/off" input path (full toggle UI in Phase 10).
-- [ ] Test: full §8 guard matrix — high/mid/low × standing/crouching × guarding/not (≈6) (AT-06).
+- [ ] Test: full §8 guard matrix — high/mid/low × standing/crouching × guarding/not (≈6) (AT-11).
 - [ ] Test: blockstun applied on block, no damage (≈2).
-- [ ] Test: knockback magnitude/direction on hit (≈2).
+- [ ] Test: knockback magnitude/direction on hit (≈2) (AT-12).
 
-**Exit gates (overrides only):** Block-matrix tests green (AT-06). Running test floor: **33**.
+**Exit gates (overrides only):** Block-matrix tests green (AT-11, AT-12). Running test floor: **33**.
 
 **Evidence:** `vitest run tests/sim/block`; recording of blocked vs unblocked exchanges.
 
@@ -565,12 +675,12 @@ hits re-juggle with decaying lift; the 6th would-be juggle becomes knockdown. *(
 - [ ] `combat/juggle.ts`: lift decay `max(0.2, 1 − 0.15*juggleCount)`, `MAX_JUGGLES = 5`, then knockdown.
 - [ ] Air hits keep the opponent aloft (continuation).
 - [ ] Drive launched/juggled airborne poses in render.
-- [ ] Test: launch velocity applied on connect (≈1).
+- [ ] Test: launch velocity applied on connect (≈1) (AT-13).
 - [ ] Test: lift decay per juggle (≈2).
-- [ ] Test: `MAX_JUGGLES` cap → 6th becomes knockdown (≈3) (AT-07).
-- [ ] Test: air-continuation keeps target aloft + `juggleCount` resets only on ground/recover (≈2).
+- [ ] Test: `MAX_JUGGLES` cap → 6th becomes knockdown (≈3) (AT-14).
+- [ ] Test: air-continuation keeps target aloft + `juggleCount` resets only on ground/recover (≈2) (AT-15).
 
-**Exit gates (overrides only):** Juggle tests green (AT-07). Running test floor: **41**.
+**Exit gates (overrides only):** Juggle tests green (AT-13, AT-14, AT-15). Running test floor: **41**.
 
 **Evidence:** `vitest run tests/sim/juggle`; recording of launch→juggle→knockdown.
 
@@ -594,11 +704,11 @@ a once-per-combo `wallSplat` (else knockdown); ground-bounce flag tracked. *(Sim
 - [ ] `combat/wallBounce.ts`: airborne wall contact, `!wallBounceUsed` → `wallSplat` (pause, inward bounce, continue) else knockdown.
 - [ ] Track `groundBounceUsed`; wire Wall Smash (`→+K`) to the wall-bounce path (FR-15).
 - [ ] Drive wallSplat/groundBounce/knockdown/wakeUp poses in render.
-- [ ] Test: sweep/low → knockdown (≈2).
+- [ ] Test: sweep/low → knockdown (≈2) (AT-16).
 - [ ] Test: knockdown lifecycle + invulnerability window (≈2).
-- [ ] Test: once-per-combo wall bounce, 2nd airborne contact → knockdown (≈4) (AT-08).
+- [ ] Test: once-per-combo wall bounce, 2nd airborne contact → knockdown (≈4) (AT-17).
 
-**Exit gates (overrides only):** Wall-bounce + knockdown tests green (AT-08). Running test floor: **49**.
+**Exit gates (overrides only):** Wall-bounce + knockdown tests green (AT-16, AT-17). Running test floor: **49**.
 
 **Evidence:** `vitest run tests/sim/wallbounce`; recording of splat→continuation, then second contact→knockdown.
 
@@ -621,11 +731,11 @@ damage, juggle/wall/ground flags) with damage scaling, resetting on recover/grou
 - [ ] `combat/damageScaling.ts`: `finalDamage = round(base * max(0.25, 1 − hits*0.08))` (pre-hit count, then increment).
 - [ ] Reset combo on opponent recover or ground contact; emit `comboReset`.
 - [ ] Surface combo hits + scaled damage to `uiStore`.
-- [ ] Test: scaling across a long combo, exact values (≈3) (AT-09).
+- [ ] Test: scaling across a long combo, exact values (≈3) (AT-18).
 - [ ] Test: pre-hit-increment order (compute, then increment) (≈2).
 - [ ] Test: reset on recover + on ground contact (≈2).
 
-**Exit gates (overrides only):** Combo tests green (AT-09). Running test floor: **56**.
+**Exit gates (overrides only):** Combo tests green (AT-18). Running test floor: **56**.
 
 **Evidence:** `vitest run tests/sim/combo`; recording of a scaling combo that resets correctly.
 
@@ -637,22 +747,23 @@ damage, juggle/wall/ground flags) with damage scaling, resetting on recover/grou
 
 **Checklist rule: mark `[x]` only when implementation is complete and validated with tests/evidence.**
 
-**Objective:** Hits read and feel impactful in Chrome: limb flash, zodiac particles, sparks,
+**Objective:** Hits read and feel impactful in Chrome: limb flash, energy particles, sparks,
 camera shake, impact sound — all driven by the sim's `SimEvent` list (§11), none feeding back
 into the sim.
 
 **Entry criteria:** Phase 8 gates green.
 
 **Work:**
-- [ ] `effects/jointFlash.ts` (flash struck limb/joint in zodiac color).
-- [ ] `effects/hitSpark.ts` + `effects/zodiacParticles.ts` — **pooled**, low cost.
+- [ ] `effects/jointFlash.ts` (flash struck limb/joint in the character's accent color).
+- [ ] `effects/hitSpark.ts` + `effects/energyParticles.ts` — **pooled**, low cost.
 - [ ] `effects/cameraShake.ts` — decaying offset, render-only.
+- [ ] Commit placeholder/licensed sfx + ambience under `public/audio/` — real files so impacts (and the Phase 10 Effect preload + its failure/retry test) have something to load.
 - [ ] `audio/audioManager.ts` (Howler): impact sounds, ambience, Chrome autoplay unlock on first input.
 - [ ] Wire all to consume `state.events` (§11) from the render layer's read; never from the sim (FR-17).
 - [ ] Firewall `rg` audit: no effects/audio under `src/sim`.
-- [ ] Test: sim emits the correct `events[]` per tick for hit/block/launch/etc. (sim-side only) (≈3).
+- [ ] Test: sim emits the correct `events[]` per tick for hit/block/launch/etc. (sim-side only) (≈3) (AT-19).
 
-**Exit gates (overrides only):** UX — recording with effects + sound in Chrome; firewall `rg` clean. Running test floor: **59**.
+**Exit gates (overrides only):** UX — recording with effects + sound in Chrome; firewall `rg` clean; sim `events[]` emission correct, no sim feedback consumption (AT-19). Running test floor: **59**.
 
 **Evidence:** recording; particle-on frame-time delta vs Phase 1; `rg` result.
 
@@ -674,14 +785,17 @@ boundary.
 - [ ] HTML/CSS HUD (`ui/`): player + dummy health bars, round-timer placeholder, combo counter, damage number, current-state debug text, input display, optional FPS (FR-18).
 - [ ] `state/uiStore.ts` (`zustand/vanilla`); subscribe HUD widgets.
 - [ ] `training/dummy.ts`: block on/off, auto-recover on/off, jump-state on/off, reset position — scripted inputs into the sim (FR-19).
+- [ ] `ui/characterSelect.ts` (+ css): Tekken-style portrait-grid select for **player + dummy**; confirm spawns the chosen pair; swap; last-selected pair persisted via `platform/persistence` (FR-26).
 - [ ] `platform/persistence.ts` (Effect): load/save settings + keybinds to `localStorage` (FR-20).
 - [ ] `platform/assets.ts` (Effect): preload audio with typed failures/retries (FR-20).
 - [ ] Boundary `rg` audit: Effect only under `src/platform`.
 - [ ] Verify a changed keybind survives reload.
 - [ ] Test: persistence round-trip (settings/keybinds serialize → reload → equal) (≈2).
 - [ ] Test: dummy-toggle input path produces the expected `InputFrame`s (≈2).
+- [ ] Test: character-select logic — pick/confirm/swap yields the correct two-character render request; selection passes no data into the sim (≈1) (AT-30).
+- [ ] Test: asset preload typed-failure + retry — a missing asset surfaces `AssetLoadError` after N retries; the in-memory `KeyValueStore` test layer keeps it pure (≈1) (FR-20).
 
-**Exit gates (overrides only):** UX — toggle walkthrough + reload-persistence recording (AT-19, AT-20); Effect-boundary `rg` clean (AT-21). Running test floor: **63**.
+**Exit gates (overrides only):** UX — character-select + toggle walkthrough + reload-persistence recording (AT-21, AT-22, AT-30); Effect-boundary `rg` clean (AT-03). Running test floor: **65**.
 
 **Evidence:** recording; persistence reload clip; `rg "effect" src/sim src/loop src/render` → no matches.
 
@@ -689,25 +803,29 @@ boundary.
 
 ---
 
-### Phase 11 — Zodiac theming + arena polish
+### Phase 11 — Tekken-5 art pass: staging + full-roster identities
 
 **Checklist rule: mark `[x]` only when implementation is complete and validated with tests/evidence.**
 
-**Objective:** The scene matches the reference look at low asset weight. (Final-audit work moves
-to Phase 12 so a polish miss can't pollute the audit gate.)
+**Objective:** The scene reads as **Tekken-5 staging** at low asset weight, and **every** roster
+character renders from its `CharacterConfig`. (Final-audit work moves to Phase 12 so a polish miss
+can't pollute the audit gate.)
 
 **Entry criteria:** Phase 10 gates green.
 
 **Work:**
-- [ ] `arena.ts`: reflective dark floor, glowing zodiac circle, mirror wall boundaries (visual), floating constellation lines, neon astrology symbols — low asset weight (FR-21).
-- [ ] `zodiacConfigs` data; map Leo (player) / Aries (dummy) energy colors to joint flash + particles.
-- [ ] Test: zodiac config → color mapping is correct (≈1).
+- [ ] `arena.ts`: Tekken-5-style **enclosed walled arena** — reflective/graded floor, deep hazy layered background, per-stage **key+rim lighting + color grade** (e.g. Moonlit-Wilderness cool blue) — low asset weight (FR-21, FR-27).
+- [ ] Side-3/4 **tracking camera**: dolly in/out as fighters close/separate, lateral track, slight elevation (Tekken framing) (FR-27).
+- [ ] Chrome lifebars + portrait-grid select styling pass (Tekken UI look) (FR-27).
+- [ ] `config/characters.ts`: author identity configs (build scalars, primary/accent colors, optional accent shape) for the **full roster**; map `accentColor` → `jointFlash` + `energyParticles` (FR-25).
+- [ ] Verify **every** roster character renders from config (select-sweep / spawn-sweep contact sheet).
+- [ ] Test: all roster `CharacterConfig`s load + map to valid rig params (parametrized over the roster) (≈1) (AT-29).
 
-**Exit gates (overrides only):** UX — reference-vs-build screenshot pair. Running test floor: **64**.
+**Exit gates (overrides only):** UX — Tekken-reference-vs-build screenshot pair + a full-roster render-sweep contact sheet (AT-29, AT-31). Running test floor: **66**.
 
-**Evidence:** screenshot pair; frame-time delta vs Phase 1 with theming on.
+**Evidence:** screenshot pair; full-roster render-sweep contact sheet; frame-time delta vs Phase 1 with staging on.
 
-**Failure protocol:** Theming tanks frame time → suspect reflective-floor / constellation overdraw; cut sample count or resolution before touching the rig.
+**Failure protocol:** Staging tanks frame time → suspect reflective-floor / background overdraw or per-stage lighting; cut sample count, background layers, or resolution before touching the rig.
 
 ---
 
@@ -728,11 +846,11 @@ clean repo-wide cold run + a real-Chrome Playwright smoke.
 - [ ] Write `artifacts/completion-summary.md`: shipped / deferred / residual risks.
 
 **Exit gates (overrides only):**
-- Desktop-Chrome FPS ≥ 60 under full-combat scene on the documented host (AT-22).
-- Sim `step()` within the per-phase budget (AT-23).
+- Desktop-Chrome FPS ≥ 60 under full-combat scene on the documented host (AT-23).
+- Sim `step()` within the per-phase budget (AT-24).
 - Every Acceptance Target `[x]` with evidence.
 - Repo-wide cold run + Playwright smoke green (or each known gap documented).
-- Running test floor: **64 sim + 1 e2e**.
+- Running test floor: **66 sim + 1 e2e**.
 
 **Evidence:** full cold-run output; Playwright result + backend-exercised line; final frame-time + sim-step numbers vs Phase 1, archived under `benchmarks/mirror-match-phase12-*.txt`; reference-vs-build screenshot pair; completion summary path.
 
@@ -750,7 +868,7 @@ clean repo-wide cold run + a real-Chrome Playwright smoke.
 - **AT-02** Recorded input log replayed twice → identical state hash. *(`vitest run tests/replay`, P1)*
 - **AT-03** `rg "effect" src/sim src/loop src/render` → no matches. *(P10)*
 - **AT-04** Sim ticks/wall-second invariant under render throttle (full vs ~20 FPS) within ±1. *(instrumented log, P1)*
-- **AT-05** State hash is computed over the byte buffer (no JSON-string float drift); two snapshots of equal state hash-equal. *(P1)*
+- **AT-05** State hash is computed over the byte buffer (no JSON-string float drift), with `-0` canonicalized to `0` and no `NaN` in serialized fields; two snapshots of equal state hash-equal. *(P1)*
 
 **Loop & determinism**
 - **AT-06** Accumulator clamps dt (≤ 250 ms) and caps substeps; a simulated long stall does not death-spiral. *(P1 test/log)*
@@ -785,6 +903,11 @@ clean repo-wide cold run + a real-Chrome Playwright smoke.
 - **AT-27** No dead code, unused params/imports/exports introduced; line delta accounted for. *(`git diff --shortstat` + review, ongoing)*
 - **AT-28** Any removed test has a same-commit replacement or a reviewer-visible justification; running test floor met each phase. *(ongoing)*
 
+**Character roster & staging**
+- **AT-29** All roster `CharacterConfig`s load and map to valid rig params; **every** character renders from config. *(render-sweep contact sheet, P11)*
+- **AT-30** Character-select picks player + dummy identity; the chosen pair renders; the **sim carries no character id** (firewall — `rg` the sim for character/roster terms → none). *(P10)*
+- **AT-31** Tekken-5 staging present — side-3/4 tracking camera (dolly in/out + track), key+rim lighting + per-stage grade, walled arena + hazy depth, chrome lifebars + portrait-grid select. *(recording, P11)*
+
 ---
 
 ## Assumptions
@@ -793,16 +916,18 @@ clean repo-wide cold run + a real-Chrome Playwright smoke.
 2. **Desktop Chrome is the contract.** WebGPU is guaranteed there; the WebGL2 backend is unverified beyond Android-Chrome smoke and is not a supported target on its own.
 3. The 60 Hz fixed tick is the simulation contract; changing it re-derives all move frame data in code, not in this plan.
 4. Howler latency is acceptable for impact feedback; swapping to a thin Web Audio wrapper later is a render/audio-layer change that does not touch the sim.
-5. **Effect-TS v4 is beta.** We pin an exact `4.0.0-beta.x` and accept that breaking changes may land before stable; upgrades are deliberate, tested events. Effect's own guidance recommends v3 for production — if v4-beta churn ever blocks a phase, **dropping to v3 (or to plain async in `platform/**`) is the documented escape hatch**, and it touches only `src/platform`, never the sim.
+5. **Effect-TS v4 is beta.** We pin the exact version **`4.0.0-beta.78`** (no `^`/`~`) and accept that breaking changes may land before stable; upgrades are deliberate, tested events. Effect's own guidance recommends v3 for production — if v4-beta churn ever blocks a phase, the escape hatch is, **in order: (a) drop to plain `async`/`try`-`catch` in `platform/**` (smallest, fully contained), then (b) drop to Effect v3** only if a service/layer is worth preserving. Prefer (a): v4 (`effect-smol`) and v3 diverge enough (module layout, some constructor/export names) that a v3 downgrade is effectively a platform-layer rewrite, whereas plain-async touches the two `platform` files and nothing else. Either path stays inside `src/platform`, never the sim.
 6. **Determinism = same-build replay on one machine.** JS double math is deterministic for identical operations in identical order on the same engine; that satisfies AT-02/AT-04. Cross-platform/cross-client determinism (true rollback) would require fixed-point and is a Non-Goal.
 7. The combat numbers in § Combat Specification are **tunable defaults** chosen for consistency + testability, not balance-final values.
+8. **Character identity is presentation-only; the sim is character-agnostic.** "All characters wired" = authoring N `CharacterConfig`s over one shared rig + one shared kit (§ Character Roster). It adds config data, render theming, and a select screen — **not** sim/combat surface. So roster size scales config + visual-verification work, not engine work.
+9. **Tekken 5 is an art-direction/staging reference, not an asset source.** Build is **private/educational** — Tekken characters/likenesses are Bandai Namco IP and this is **not distributed**. The Fandom gallery and Sketchfab models are **visual reference** for authoring geometric configs, **not** imported assets. If distribution is ever wanted, swap to original-inspired characters (a `config/characters.ts` data change; no code/sim impact).
 
 ---
 
 ## Execution Notes
 
 - **Skill stack for execution:** Gold Standard phased execution; mark `[x]` only on shipped + evidenced work; per-phase guardrail line is mandatory (already inlined).
-- **Effect v4-beta hygiene:** pin the exact beta in `package.json` (no `^`/`~`); CI installs from the lockfile; an Effect upgrade is its own commit with the platform tests re-run.
+- **Effect v4-beta hygiene:** pin the exact `effect@4.0.0-beta.78` in `package.json` (no `^`/`~`); keep any `@effect/*` package on the *same* beta; CI installs from the lockfile; an Effect upgrade is its own commit with the platform tests re-run. See § Platform Layer for the full package/runtime/Schema contract.
 - **WebGPU bootstrap order is load-bearing:** every entry path (`main.ts`, any test harness that renders) `await`s `renderer.init()` and logs the backend before the loop. Never call `render()` ahead of init.
 - **Playwright is real Chrome:** `channel: 'chrome'`, not bundled Chromium, with the Phase 12 WebGPU flags; record the backend the harness actually exercised rather than failing the gate on CI GPU limits.
 - **Scope discipline:** tests/lint scoped to each phase's edits; the only repo-wide cold run is Phase 12.
@@ -823,6 +948,10 @@ clean repo-wide cold run + a real-Chrome Playwright smoke.
 - Howler.js: https://howlerjs.com/
 - zustand vanilla store: https://zustand.docs.pmnd.rs/apis/create-store
 - Playwright + headless WebGPU flags: https://michelkraemer.com/enable-gpu-for-slow-playwright-tests-in-headless-mode/
+- Tekken 5 (roster + lore, Fandom): https://tekken.fandom.com/wiki/Tekken_5
+- Tekken 5 art gallery (character reference): https://tekken.fandom.com/wiki/Tekken_5/Gallery
+- Tekken 3D models (visual reference only — NOT imported): https://sketchfab.com/tags/tekken
+- Tekken 5 stage reference (Tekken Warehouse): https://tekkenwarehouse.com/tekken5/stages/
 
 ---
 
