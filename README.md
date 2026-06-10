@@ -4,14 +4,14 @@
 
 - **TypeScript (strict) + Vite + Bun**
 - **Three.js WebGPU renderer (primary)** with **WebGL2 fallback** scoped to Android-Chrome coverage
-- A **deterministic, fixed-timestep (60 Hz), headless simulation** in `src/sim/**`
+- A **deterministic, fixed-timestep (60 Hz), headless simulation** in `src/sim/`
 - **Bare Three.js rendering** (no React/R3F), HTML/CSS HUD, Howler audio
-- **Effect-TS only in platform boundaries** (`src/platform/**`)
+- **Effect-TS only in platform boundaries** (`src/platform/`)
 - **Vitest** for sim correctness + replay determinism, and **Playwright** for final Chrome smoke validation
 
 ## Core Architectural Contract
 
-- `src/sim/**` is pure and serializable: no renderer, DOM, audio, Effect, timers, or network.
+- `src/sim/` is pure and serializable: no renderer, DOM, audio, Effect, timers, or network.
 - Simulation is frame-driven (`step(state, inputs)`), deterministic, and replay-hash stable.
 - Render/UI/audio are one-way consumers of sim state; they never mutate combat state directly.
 
