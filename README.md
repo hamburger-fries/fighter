@@ -41,5 +41,3 @@ A phase is complete only when its required tests, static checks, performance che
 - Heavy physics/animation pipelines and non-essential content systems
 
 ---
-
-For full details and per-phase gates, refer to the full Mirror Match final plan and companion game-logic spec documents provided with this project brief.
