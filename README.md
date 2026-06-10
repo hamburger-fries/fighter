@@ -42,6 +42,4 @@ A phase is complete only when its required tests, static checks, performance che
 
 ---
 
-For full details and per-phase gates, refer to:
-- `mirror-match-final-plan.md` (definitive implementation plan)
-- `mirror-match-game-logic-prompt.md` (authoritative sim spec for phases 3–8)
+For full details and per-phase gates, refer to the full Mirror Match final plan and companion game-logic spec documents provided with this project brief.
